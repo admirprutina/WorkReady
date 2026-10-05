@@ -1,38 +1,26 @@
+using WorkReady.Domain.Jobs.Events;
+
 namespace WorkReady.Domain.Jobs;
 
 /// <summary>
-/// One concrete planned piece of work at one Site. Aggregate root.
+/// One concrete planned piece of work at one Site. Aggregate root, event-sourced.
+/// Decision methods validate invariants against the current state and return the resulting event without changing state;
+/// <see cref="Create"/> and the <c>Apply</c> methods rebuild state from events.
 /// Readiness is not stored: it is derived from the check evidence that is valid at a given moment.
 /// </summary>
 public sealed class Job
 {
-    public Job(Guid technicianId, Guid siteId, WorkType workType, DateTimeOffset plannedStart)
+    private Job()
     {
-        if (technicianId == Guid.Empty)
-        {
-            throw new ArgumentException("Technician is required.", nameof(technicianId));
-        }
-
-        if (siteId == Guid.Empty)
-        {
-            throw new ArgumentException("Site is required.", nameof(siteId));
-        }
-
-        Id = Guid.NewGuid();
-        TechnicianId = technicianId;
-        SiteId = siteId;
-        WorkType = workType ?? throw new ArgumentNullException(nameof(workType));
-        PlannedStart = plannedStart;
-        State = JobState.Planned;
     }
 
-    public Guid Id { get; }
+    public Guid Id { get; private set; }
 
     public Guid TechnicianId { get; private set; }
 
-    public Guid SiteId { get; }
+    public Guid SiteId { get; private set; }
 
-    public WorkType WorkType { get; private set; }
+    public WorkType WorkType { get; private set; } = null!;
 
     public DateTimeOffset PlannedStart { get; private set; }
 
@@ -44,7 +32,32 @@ public sealed class Job
 
     public SiteAccessEvidence? SiteAccessEvidence { get; private set; }
 
-    public void ReassignTechnician(Guid technicianId)
+    // Decisions
+
+    public static JobCreated Plan(Guid jobId, Guid technicianId, Guid siteId, WorkType workType, DateTimeOffset plannedStart)
+    {
+        if (jobId == Guid.Empty)
+        {
+            throw new ArgumentException("Job id is required.", nameof(jobId));
+        }
+
+        if (technicianId == Guid.Empty)
+        {
+            throw new ArgumentException("Technician is required.", nameof(technicianId));
+        }
+
+        if (siteId == Guid.Empty)
+        {
+            throw new ArgumentException("Site is required.", nameof(siteId));
+        }
+
+        ArgumentNullException.ThrowIfNull(workType);
+
+        return new JobCreated(jobId, technicianId, siteId, workType, plannedStart);
+    }
+
+    /// <returns>The event, or <c>null</c> when the technician is already assigned and nothing changes.</returns>
+    public TechnicianReassigned? ReassignTechnician(Guid technicianId)
     {
         EnsurePlanned("reassign technician");
 
@@ -53,44 +66,26 @@ public sealed class Job
             throw new ArgumentException("Technician is required.", nameof(technicianId));
         }
 
-        if (technicianId == TechnicianId)
-        {
-            return;
-        }
-
-        TechnicianId = technicianId;
-
-        // Every piece of evidence was obtained for the previous technician.
-        QualificationEvidence = null;
-        SafetyTrainingEvidence = null;
-        SiteAccessEvidence = null;
+        return technicianId == TechnicianId ? null : new TechnicianReassigned(Id, technicianId);
     }
 
-    public void ChangeWorkType(WorkType workType)
+    /// <returns>The event, or <c>null</c> when the job already has this work type and nothing changes.</returns>
+    public WorkTypeChanged? ChangeWorkType(WorkType workType)
     {
         EnsurePlanned("change work type");
         ArgumentNullException.ThrowIfNull(workType);
 
-        if (workType == WorkType)
-        {
-            return;
-        }
-
-        WorkType = workType;
-
-        // Only qualification depends on the work type.
-        QualificationEvidence = null;
+        return workType == WorkType ? null : new WorkTypeChanged(Id, workType);
     }
 
-    public void Reschedule(DateTimeOffset plannedStart)
+    public JobRescheduled Reschedule(DateTimeOffset plannedStart)
     {
         EnsurePlanned("reschedule");
 
-        // Evidence is kept; whether it is still valid is decided when readiness is evaluated.
-        PlannedStart = plannedStart;
+        return new JobRescheduled(Id, plannedStart);
     }
 
-    public void RecordQualificationEvidence(QualificationEvidence evidence)
+    public QualificationEvidenceRecorded RecordQualificationEvidence(QualificationEvidence evidence)
     {
         EnsurePlanned("record qualification evidence");
         ArgumentNullException.ThrowIfNull(evidence);
@@ -103,10 +98,10 @@ public sealed class Job
                 Id, "Qualification", $"work type '{evidence.WorkType}' is not the job's work type '{WorkType}'");
         }
 
-        QualificationEvidence = evidence;
+        return new QualificationEvidenceRecorded(Id, evidence);
     }
 
-    public void RecordSafetyTrainingEvidence(SafetyTrainingEvidence evidence)
+    public SafetyTrainingEvidenceRecorded RecordSafetyTrainingEvidence(SafetyTrainingEvidence evidence)
     {
         EnsurePlanned("record safety training evidence");
         ArgumentNullException.ThrowIfNull(evidence);
@@ -114,10 +109,10 @@ public sealed class Job
         EnsureCurrentTechnician(evidence.TechnicianId, "Safety training");
         EnsureJobSite(evidence.SiteId, "Safety training");
 
-        SafetyTrainingEvidence = evidence;
+        return new SafetyTrainingEvidenceRecorded(Id, evidence);
     }
 
-    public void RecordSiteAccessEvidence(SiteAccessEvidence evidence)
+    public SiteAccessEvidenceRecorded RecordSiteAccessEvidence(SiteAccessEvidence evidence)
     {
         EnsurePlanned("record site access evidence");
         ArgumentNullException.ThrowIfNull(evidence);
@@ -125,7 +120,7 @@ public sealed class Job
         EnsureCurrentTechnician(evidence.TechnicianId, "Site access");
         EnsureJobSite(evidence.SiteId, "Site access");
 
-        SiteAccessEvidence = evidence;
+        return new SiteAccessEvidenceRecorded(Id, evidence);
     }
 
     public bool CanStart(DateTimeOffset at) =>
@@ -134,7 +129,7 @@ public sealed class Job
         HasValidSafetyTrainingAt(at) &&
         HasFreshSiteAccessAt(at);
 
-    public void Start(DateTimeOffset at)
+    public JobStarted Start(DateTimeOffset at)
     {
         EnsurePlanned("start");
 
@@ -143,8 +138,49 @@ public sealed class Job
             throw new JobNotReadyToStartException(Id, at);
         }
 
-        State = JobState.Started;
+        return new JobStarted(Id, at);
     }
+
+    // Evolution
+
+    public static Job Create(JobCreated @event) => new()
+    {
+        Id = @event.JobId,
+        TechnicianId = @event.TechnicianId,
+        SiteId = @event.SiteId,
+        WorkType = @event.WorkType,
+        PlannedStart = @event.PlannedStart,
+        State = JobState.Planned
+    };
+
+    public void Apply(TechnicianReassigned @event)
+    {
+        TechnicianId = @event.TechnicianId;
+
+        // Every piece of evidence was obtained for the previous technician.
+        QualificationEvidence = null;
+        SafetyTrainingEvidence = null;
+        SiteAccessEvidence = null;
+    }
+
+    public void Apply(WorkTypeChanged @event)
+    {
+        WorkType = @event.WorkType;
+
+        // Only qualification depends on the work type.
+        QualificationEvidence = null;
+    }
+
+    // Evidence is kept; whether it is still valid is decided when readiness is evaluated.
+    public void Apply(JobRescheduled @event) => PlannedStart = @event.PlannedStart;
+
+    public void Apply(QualificationEvidenceRecorded @event) => QualificationEvidence = @event.Evidence;
+
+    public void Apply(SafetyTrainingEvidenceRecorded @event) => SafetyTrainingEvidence = @event.Evidence;
+
+    public void Apply(SiteAccessEvidenceRecorded @event) => SiteAccessEvidence = @event.Evidence;
+
+    public void Apply(JobStarted @event) => State = JobState.Started;
 
     private bool HasValidQualificationAt(DateTimeOffset at) =>
         QualificationEvidence is { } evidence &&
