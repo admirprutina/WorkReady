@@ -2,6 +2,7 @@ using Marten;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using WorkReady.Application;
+using WorkReady.Application.Jobs.GetJobById;
 using WorkReady.Application.Jobs.PlanJob;
 using WorkReady.Application.Jobs.StartJob;
 using WorkReady.Application.Messaging;
@@ -95,5 +96,47 @@ public sealed class JobCommandsTests : IAsyncLifetime
             var job = await session.Events.AggregateStreamAsync<Job>(planned.JobId);
             Assert.Equal(JobState.Started, job!.State);
         }
+    }
+
+    [PostgresFact]
+    public async Task Get_job_by_id_reads_the_projection_right_after_each_command()
+    {
+        var technicianId = Guid.NewGuid();
+        var siteId = Guid.NewGuid();
+        var plannedStart = DateTimeOffset.UtcNow.AddHours(1);
+
+        var planned = await Send(new PlanJobCommandRequest(technicianId, siteId, "HighVoltage", plannedStart));
+
+        // Inline projection: the read model was committed with JobCreated, so the query sees it immediately.
+        var afterPlan = await Send(new GetJobByIdQueryRequest(planned.JobId));
+        Assert.Equal(
+            new GetJobByIdQueryResult(planned.JobId, technicianId, siteId, "HighVoltage", plannedStart, JobState.Planned, null),
+            afterPlan);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var session = scope.ServiceProvider.GetRequiredService<IDocumentSession>();
+            var workType = new WorkType("HighVoltage");
+            var until = DateTimeOffset.UtcNow.AddDays(1);
+
+            session.Events.Append(
+                planned.JobId,
+                new QualificationEvidenceRecorded(
+                    planned.JobId, new QualificationEvidence(Guid.NewGuid(), technicianId, workType, until)),
+                new SafetyTrainingEvidenceRecorded(
+                    planned.JobId, new SafetyTrainingEvidence(Guid.NewGuid(), technicianId, siteId, until)),
+                new SiteAccessEvidenceRecorded(
+                    planned.JobId, new SiteAccessEvidence(Guid.NewGuid(), technicianId, siteId, until)));
+            await session.SaveChangesAsync();
+        }
+
+        var started = await Send(new StartJobCommandRequest(planned.JobId));
+
+        var afterStart = await Send(new GetJobByIdQueryRequest(planned.JobId));
+        Assert.NotNull(afterStart);
+        Assert.Equal(JobState.Started, afterStart.State);
+        Assert.Equal(started.StartedAt, afterStart.StartedAt);
+
+        Assert.Null(await Send(new GetJobByIdQueryRequest(Guid.CreateVersion7())));
     }
 }

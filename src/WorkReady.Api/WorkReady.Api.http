@@ -11,8 +11,12 @@ Content-Type: application/json
   "plannedStart": "2026-10-06T08:00:00Z"
 }
 
-### Start a job -> 200 OK (a freshly planned job has no evidence yet, so the domain rejects it)
 @jobId = paste-the-jobId-from-the-response-above
+
+### Get a job -> 200 OK from the JobDetails read model, 404 Not Found if there is no such job
+GET {{WorkReady.Api_HostAddress}}/api/jobs/{{jobId}}
+
+### Start a job -> 200 OK (a freshly planned job has no evidence yet, so the domain rejects it)
 POST {{WorkReady.Api_HostAddress}}/api/jobs/{{jobId}}/start
 
 ###

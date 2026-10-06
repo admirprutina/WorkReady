@@ -1,5 +1,6 @@
 using JasperFx;
 using Marten;
+using WorkReady.Application.Jobs.ReadModels;
 using WorkReady.Domain;
 using WorkReady.Domain.Jobs;
 using WorkReady.Domain.Jobs.Events;
@@ -102,6 +103,55 @@ public sealed class MartenJobStreamTests : IAsyncLifetime
                 [typeof(JobCreated), typeof(QualificationEvidenceRecorded), typeof(SafetyTrainingEvidenceRecorded),
                  typeof(SiteAccessEvidenceRecorded), typeof(JobStarted)],
                 events.Select(e => e.EventType));
+        }
+    }
+
+    [PostgresFact]
+    public async Task Job_details_read_model_is_saved_with_the_events_and_loaded_directly()
+    {
+        // 1-2. Start the stream; the inline projection writes the read model in the same SaveChangesAsync.
+        await using (var session = _store.LightweightSession())
+        {
+            session.Events.StartStream<Job>(_jobId, Created());
+            await session.SaveChangesAsync();
+        }
+
+        // 3-4. Load the projected document directly: no stream replay, no Job aggregate.
+        await using (var query = _store.QuerySession())
+        {
+            var details = await query.LoadAsync<JobDetailsReadModel>(_jobId);
+
+            Assert.NotNull(details);
+            Assert.Equal(_technicianId, details.TechnicianId);
+            Assert.Equal(_siteId, details.SiteId);
+            Assert.Equal("HighVoltage", details.WorkType);
+            Assert.Equal(Now.AddHours(2), details.PlannedStart);
+            Assert.Equal(JobState.Planned, details.State);
+            Assert.Null(details.StartedAt);
+        }
+
+        // 5-6. Append later events and save.
+        var otherTechnician = Guid.NewGuid();
+        await using (var session = _store.LightweightSession())
+        {
+            session.Events.Append(
+                _jobId,
+                new JobRescheduled(_jobId, Now.AddDays(1)),
+                new TechnicianReassigned(_jobId, otherTechnician),
+                new JobStarted(_jobId, Now.AddDays(1)));
+            await session.SaveChangesAsync();
+        }
+
+        // 7-8. The stored read model was updated in that same save.
+        await using (var query = _store.QuerySession())
+        {
+            var details = await query.LoadAsync<JobDetailsReadModel>(_jobId);
+
+            Assert.NotNull(details);
+            Assert.Equal(otherTechnician, details.TechnicianId);
+            Assert.Equal(Now.AddDays(1), details.PlannedStart);
+            Assert.Equal(JobState.Started, details.State);
+            Assert.Equal(Now.AddDays(1), details.StartedAt);
         }
     }
 

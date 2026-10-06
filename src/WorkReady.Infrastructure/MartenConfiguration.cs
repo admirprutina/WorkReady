@@ -1,6 +1,7 @@
 using JasperFx.Events;
+using JasperFx.Events.Projections;
 using Marten;
-using WorkReady.Domain.Jobs;
+using WorkReady.Infrastructure.Jobs;
 
 namespace WorkReady.Infrastructure;
 
@@ -14,8 +15,12 @@ public static class MartenConfiguration
         // Streams are identified by the aggregate id; a Job stream's id is the JobId.
         options.Events.StreamIdentity = StreamIdentity.AsGuid;
 
-        // Job is self-aggregating: Marten rebuilds it with Job.Create(JobCreated) and Job.Apply(...).
-        // Live: rebuilt from the events on every fetch, nothing is stored besides the events.
-        options.Projections.LiveStreamAggregation<Job>();
+        // Write side. The Job aggregate is rebuilt with Job.Create(JobCreated) and Job.Apply(...) (see JobAggregation).
+        // Live: rebuilt from the events on every fetch for a command, never stored.
+        options.Projections.Add(new JobAggregation(), ProjectionLifecycle.Live);
+
+        // Read side. JobDetailsReadModel is a stored document, updated from the Job events.
+        // Inline: written in the same transaction as the events, so a query right after a command sees it.
+        options.Projections.Add(new JobDetailsProjection(), ProjectionLifecycle.Inline);
     }
 }

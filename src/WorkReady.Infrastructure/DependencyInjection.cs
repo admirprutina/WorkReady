@@ -21,6 +21,7 @@ public static class DependencyInjection
             .UseLightweightSessions();
 
         services.AddScoped<IJobEventStore, MartenJobEventStore>();
+        services.AddScoped<IJobReadStore, MartenJobReadStore>();
 
         return services;
     }
