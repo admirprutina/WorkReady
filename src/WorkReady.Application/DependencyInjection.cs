@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using WorkReady.Application.Messaging;
 
 namespace WorkReady.Application;
@@ -8,6 +9,7 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddScoped<ISender, Mediator>();
+        services.TryAddSingleton(TimeProvider.System);
 
         var assembly = typeof(DependencyInjection).Assembly;
 

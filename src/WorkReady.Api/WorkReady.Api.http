@@ -1,3 +1,18 @@
 @WorkReady.Api_HostAddress = http://localhost:5186
 
+### Plan a job -> 201 Created, returns the new jobId
+POST {{WorkReady.Api_HostAddress}}/api/jobs
+Content-Type: application/json
+
+{
+  "technicianId": "0198c2a4-0000-7000-8000-000000000001",
+  "siteId": "0198c2a4-0000-7000-8000-000000000002",
+  "workType": "HighVoltage",
+  "plannedStart": "2026-10-06T08:00:00Z"
+}
+
+### Start a job -> 200 OK (a freshly planned job has no evidence yet, so the domain rejects it)
+@jobId = paste-the-jobId-from-the-response-above
+POST {{WorkReady.Api_HostAddress}}/api/jobs/{{jobId}}/start
+
 ###

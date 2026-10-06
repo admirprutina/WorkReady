@@ -1,0 +1,22 @@
+# Local development only. These credentials are not secrets and must never be used outside a developer machine.
+services:
+  postgres:
+    image: postgres:17
+    container_name: workready-postgres
+    environment:
+      POSTGRES_DB: workready
+      POSTGRES_USER: workready
+      POSTGRES_PASSWORD: workready_local_dev
+    ports:
+      # 5433 on the host so it does not clash with a natively installed PostgreSQL on 5432.
+      - "5433:5432"
+    volumes:
+      - workready-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workready -d workready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  workready-postgres-data:
